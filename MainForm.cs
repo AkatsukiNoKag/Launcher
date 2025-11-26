@@ -9,8 +9,11 @@ namespace Launcher
     {
         string version = null;
         const string destVersion = "f2541212";
+        private ToolTip tip = new ToolTip();
         public MainForm()
         {
+            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            tip.IsBalloon = true;
             InitializeComponent();
             InitializeVersion();
         }
@@ -47,13 +50,17 @@ namespace Launcher
 
         private void Button1_Click(object sender, EventArgs e)
         {
+            if (!(sender is Button v))
+            {
+                return;
+            }
             string procName = "WeChat";
             string pattern = version??"63090217";
 
             string valStr = destVersion;
 
             var proc = Array.Find(Process.GetProcessesByName(procName), p => true)
-                       ?? throw new ArgumentException("找不到进程: " + procName);
+                       ?? throw new ArgumentException("进程未启动: " + procName);
             int target;
             if (pattern.StartsWith("0x", StringComparison.OrdinalIgnoreCase) || System.Text.RegularExpressions.Regex.IsMatch(pattern, @"^[0-9A-Fa-f]+$"))
                 target = FastInt32Scanner.ParseHexInt32(pattern);
@@ -64,7 +71,8 @@ namespace Launcher
 
             var hits = FastInt32Scanner.ScanInt32Value(proc.Id, target);
 
-            Console.WriteLine($"匹配数量: {hits.Count}");
+            Console.WriteLine("匹配数量", v, v.Height, 0, 3000);
+
             foreach (var address in hits)
             {
 
@@ -94,16 +102,8 @@ namespace Launcher
                     Console.WriteLine($"写入后读取验证: {verify} (0x{verify:X8})");
 
                     if (verify != newVal)
-                        Console.WriteLine("警告：写入值与读回值不一致，可能地址错误或进程覆盖了此值。");
+                        Console.WriteLine("警告：写入值与读回值不一致，可能地址错误或进程覆盖了此值。", v, v.Height, 0, 3000);
 
-                    //if (doFreeze)
-                    //{
-                    //    Console.WriteLine("启动冻结线程，每 100ms 写入一次...");
-                    //    var t = MemoryWriter.FreezeInt32(hProcess, address, newVal);
-                    //    Console.WriteLine("按 Enter 停止冻结。");
-                    //    Console.ReadLine();
-                    //    t.Interrupt();
-                    //}
                 }
                 finally
                 {
@@ -112,29 +112,7 @@ namespace Launcher
                 
             }
 
-
-
-
-
-
-
-
-
-
-
-            //try
-            //{
-            //    var results = MemoryHexScanner.ScanByProcessName(procName, pattern);
-            //    Console.WriteLine($"匹配数量: {results.Count}");
-            //    foreach (var r in results)
-            //    {
-            //        Console.WriteLine(r);
-            //    }
-            //}
-            //catch (Exception ex)
-            //{
-            //    Console.WriteLine("扫描失败: " + ex);
-            //}
+            tip.Show("已完成请登录", v, v.Height, 0, 3000);
         }
     }
 }
