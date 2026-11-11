@@ -1,75 +1,43 @@
-
-name: WinForms Auto Release
+name: Build and Release Launcher
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build .NET Framework 4.8 x86
+    name: Build .NET Framework 4.8
     runs-on: windows-latest
-
     steps:
-      # 1. 获取项目源码
       - name: Checkout source
         uses: actions/checkout@v4
-
-      # 2. 配置 MSBuild
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
-
-      # 3. 配置 NuGet
-      - name: Setup NuGet
-        uses: NuGet/setup-nuget@v2
-
-      # 4. 还原 NuGet 依赖
-      - name: Restore NuGet packages
-        run: nuget restore Launcher.sln -NonInteractive
-
-      # 5. 编译项目
-      - name: Build WinForms
-        run: |
-          msbuild Launcher.sln `
-            /m `
-            /t:Rebuild `
-            /p:Configuration=Release `
-            /p:Platform=x86 `
-            /p:RestorePackagesConfig=true `
-            /verbosity:minimal
-
-      # 6. 收集编译文件
-      - name: Prepare Release files
+      - name: Build WinForms application
+        run: msbuild Launcher.sln /m /t:Rebuild /p:Configuration=Release /p:Platform="Any CPU" /verbosity:minimal
+      - name: Prepare release files
         shell: pwsh
         run: |
-          $exeName = "Launcher.exe"
-
-          $exe = Get-ChildItem -Path . -Filter $exeName -Recurse -File |
-            Where-Object {
-              $_.FullName -match '\\bin\\' -and
-              $_.FullName -notmatch '\\obj\\'
-            } |
-            Select-Object -First 1
-
-          if (-not $exe) {
-            throw "找不到编译后的 $exeName"
-          }
-
-          New-Item -ItemType Directory -Force -Path "./publish" | Out-Null
-
-          Copy-Item "$($exe.DirectoryName)/*" "./publish/" -Recurse -Force
-
-      # 7. 压缩发布文件
-      - name: Package Release
-        run: |
-          Compress-Archive -Path ./publish/* -DestinationPath ./Release.zip
-
-      # 8. 自动创建 GitHub Release
+          New-Item -ItemType Directory -Force -Path ./publish | Out-Null
+          Copy-Item -Path ./bin/Release/* -Destination ./publish -Recurse -Force
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Launcher-build
+          path: ./publish
+          if-no-files-found: error
+      - name: Package release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: Compress-Archive -Path ./publish/* -DestinationPath ./Release.zip
       - name: Create GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: Release.zip
