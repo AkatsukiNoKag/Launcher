@@ -1,118 +1,172 @@
-﻿using Microsoft.Win32;
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.Windows.Forms;
 
 namespace Launcher
 {
-    public partial class MainForm: Form
+    public partial class MainForm : Form
     {
-        string version = null;
-        const string destVersion = "f2541212";
-        private ToolTip tip = new ToolTip();
+        private const string TargetProcessName = "WeChat";
+        private const string TargetModuleName = "WeChatWin.dll";
+        private const string DestinationVersion = "f254200c";//目标版本
+        private const string DestinationVersion2 = "63090217";//自己的版本
+
+        // RVAs relative to WeChatWin.dll. They are validated before the target
+        // process is opened, so a typo cannot result in a partial update.
+        //private static readonly string[] TargetOffsets =
+        //{
+        //"2FFEAF8",
+        //"3020ELC",
+        //"3021AEC",
+        //"303C4D8",
+        //"303FEF4",
+        //"30416EC"
+        //};
+        private static readonly string TargetOffset = "3020E1C";
+
+        private readonly ToolTip tip = new ToolTip();
+
         public MainForm()
         {
             Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             tip.IsBalloon = true;
             InitializeComponent();
-            InitializeVersion();
-        }
-
-        private void InitializeVersion()
-        {
-            string registryPath = @"SOFTWARE\Tencent\WeChat";
-            string valueName = "Version";
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(registryPath))
-            {
-                if (key != null)
-                {
-                    object value = key.GetValue(valueName);
-
-                    if (value != null)
-                    {
-                        if (value is int ver)
-                        {
-                            version = ver.ToString("X");
-                        }
-                        Console.WriteLine("WeChat Version: " + value.ToString());
-                    }
-                    else
-                    {
-                        Console.WriteLine("未找到 Version 值。");
-                    }
-                }
-                else
-                {
-                    Console.WriteLine("未找到注册表项。");
-                }
-            }
         }
 
         private void Button1_Click(object sender, EventArgs e)
         {
-            if (!(sender is Button v))
+            if (!(sender is Button button))
             {
                 return;
             }
-            string procName = "WeChat";
-            string pattern = version??"63090217";
 
-            string valStr = destVersion;
-
-            var proc = Array.Find(Process.GetProcessesByName(procName), p => true)
-                       ?? throw new ArgumentException("进程未启动: " + procName);
-            int target;
-            if (pattern.StartsWith("0x", StringComparison.OrdinalIgnoreCase) || System.Text.RegularExpressions.Regex.IsMatch(pattern, @"^[0-9A-Fa-f]+$"))
-                target = FastInt32Scanner.ParseHexInt32(pattern);
-            else
-                target = int.Parse(pattern);
-
-            Console.WriteLine($"扫描进程 {proc.Id} {proc.ProcessName}, 目标值: {target} (hex 0x{target:X8})");
-
-            var hits = FastInt32Scanner.ScanInt32Value(proc.Id, target);
-
-            Console.WriteLine("匹配数量", v, v.Height, 0, 3000);
-
-            foreach (var address in hits)
+            try
             {
+                // Parse all configuration before any target-process memory is changed.
+                var offset = ParseOffsets(TargetOffset);
+                var newValue = ParseHexInt32(DestinationVersion);
+                var process = Array.Find(Process.GetProcessesByName(TargetProcessName), p => true)
+                              ?? throw new ArgumentException("进程未启动: " + TargetProcessName);
+                var module = FindTargetModule(process);
 
-                Console.WriteLine($"0x{address.ToInt64():X}");
-                //bool doFreeze = args.Length >= 4 && args[3].Equals("freeze", StringComparison.OrdinalIgnoreCase);
+                Console.WriteLine($"目标进程: {process.ProcessName} (PID {process.Id})");
+                Console.WriteLine($"目标模块: {module.ModuleName}, 基址: 0x{module.BaseAddress.ToInt64():X}");
 
-
-                // 解析新值（十进制或十六进制）
-                int newVal;
-                if (valStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                    newVal = int.Parse(valStr.Substring(2), System.Globalization.NumberStyles.HexNumber);
-                else if (System.Text.RegularExpressions.Regex.IsMatch(valStr, @"^[0-9A-Fa-f]+$"))
-                    newVal = int.Parse(valStr, System.Globalization.NumberStyles.HexNumber);
-                else
-                    newVal = int.Parse(valStr);
-
-                Console.WriteLine($"目标进程: {proc.ProcessName} (PID {proc.Id})");
-                Console.WriteLine($"写入地址: 0x{address.ToInt64():X}");
-                Console.WriteLine($"新值: {newVal} (hex 0x{newVal:X8})");
-
-                var hProcess = MemoryWriter.OpenProcessForEdit(proc.Id);
+                var processHandle = MemoryWriter.OpenProcessForEdit(process.Id);
                 try
                 {
-                    // 写入
-                    MemoryWriter.WriteInt32(hProcess, address, newVal);
-                    var verify = MemoryWriter.ReadInt32(hProcess, address);
-                    Console.WriteLine($"写入后读取验证: {verify} (0x{verify:X8})");
+                    var address = new IntPtr(checked(module.BaseAddress.ToInt64() + (long)offset));
+                    Console.WriteLine($"写入 RVA: 0x{offset:X}, 地址: 0x{address.ToInt64():X}");
 
-                    if (verify != newVal)
-                        Console.WriteLine("警告：写入值与读回值不一致，可能地址错误或进程覆盖了此值。", v, v.Height, 0, 3000);
+                    MemoryWriter.WriteInt32(processHandle, address, newValue);
 
+                    var verifiedValue = MemoryWriter.ReadInt32(processHandle, address);
+                    Console.WriteLine($"写入后读取验证: {verifiedValue} (0x{verifiedValue:X8})");
+                    if (verifiedValue != newValue)
+                    {
+                        throw new InvalidOperationException("写入值与读回值不一致，已停止后续写入。");
+                    }
                 }
                 finally
                 {
-                    MemoryWriter.CloseHandle(hProcess);
+                    MemoryWriter.CloseHandle(processHandle);
                 }
-                
+
+                tip.Show("已完成请登录", button, button.Height, 0, 3000);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("修改失败: " + ex.Message);
+                tip.Show("修改失败，请查看控制台", button, button.Height, 0, 3000);
+            }
+        }
+
+        private static uint ParseOffsets(string targetOffset)
+        {
+            if (!uint.TryParse(targetOffset, NumberStyles.AllowHexSpecifier,
+                CultureInfo.InvariantCulture, out var ret))
+            {
+                throw new FormatException("无效的十六进制 RVA: " + targetOffset);
+            }
+            else
+            {
+                return ret;
+            }
+        }
+
+        private static int ParseHexInt32(string value)
+        {
+            uint parsedValue;
+            if (!uint.TryParse(value, NumberStyles.AllowHexSpecifier,
+                CultureInfo.InvariantCulture, out parsedValue))
+            {
+                throw new FormatException("无效的十六进制值: " + value);
             }
 
-            tip.Show("已完成请登录", v, v.Height, 0, 3000);
+            return unchecked((int)parsedValue);
+        }
+
+        private static ProcessModule FindTargetModule(Process process)
+        {
+            foreach (ProcessModule module in process.Modules)
+            {
+                if (string.Equals(module.ModuleName, TargetModuleName,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return module;
+                }
+            }
+
+            throw new InvalidOperationException("未找到目标模块: " + TargetModuleName);
+        }
+
+        private void button2_Click(object sender, EventArgs e)
+        {
+            if (!(sender is Button button))
+            {
+                return;
+            }
+
+            try
+            {
+                // Parse all configuration before any target-process memory is changed.
+                var offset = ParseOffsets(TargetOffset);
+                var newValue = ParseHexInt32(DestinationVersion2);
+                var process = Array.Find(Process.GetProcessesByName(TargetProcessName), p => true)
+                              ?? throw new ArgumentException("进程未启动: " + TargetProcessName);
+                var module = FindTargetModule(process);
+
+                Console.WriteLine($"目标进程: {process.ProcessName} (PID {process.Id})");
+                Console.WriteLine($"目标模块: {module.ModuleName}, 基址: 0x{module.BaseAddress.ToInt64():X}");
+
+                var processHandle = MemoryWriter.OpenProcessForEdit(process.Id);
+                try
+                {
+                    var address = new IntPtr(checked(module.BaseAddress.ToInt64() + (long)offset));
+                    Console.WriteLine($"写入 RVA: 0x{offset:X}, 地址: 0x{address.ToInt64():X}");
+
+                    MemoryWriter.WriteInt32(processHandle, address, newValue);
+
+                    var verifiedValue = MemoryWriter.ReadInt32(processHandle, address);
+                    Console.WriteLine($"写入后读取验证: {verifiedValue} (0x{verifiedValue:X8})");
+                    if (verifiedValue != newValue)
+                    {
+                        throw new InvalidOperationException("写入值与读回值不一致，已停止后续写入。");
+                    }
+                }
+                finally
+                {
+                    MemoryWriter.CloseHandle(processHandle);
+                }
+
+                tip.Show("已完成请登录", button, button.Height, 0, 3000);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("修改失败: " + ex.Message);
+                tip.Show($"{ex.Message}", button, button.Height, 0, 3000);
+            }
         }
     }
 }
